@@ -1995,7 +1995,7 @@ static void unregisterPort(const char *portName)
     dpCommonFree(&pport->dpc);
     epicsThreadPrivateDelete(pport->queueLockPortId);
     epicsMutexDestroy(pport->synchronousLock);
-    epicsMutexDestroy(pport->asynManagerLock);
+//     epicsMutexDestroy(pport->asynManagerLock);
     free(pport);
 }
 
