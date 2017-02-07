@@ -132,6 +132,7 @@ typedef struct asynManager {
     asynStatus (*registerPort)(const char *portName,
                               int attributes,int autoConnect,
                               unsigned int priority,unsigned int stackSize);
+    void (*unregisterPort)(const char *portName);
     asynStatus (*registerInterface)(const char *portName,
                               asynInterface *pasynInterface);
     asynStatus (*exceptionConnect)(asynUser *pasynUser);

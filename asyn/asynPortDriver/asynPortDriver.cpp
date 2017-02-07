@@ -3364,6 +3364,7 @@ asynPortDriver::~asynPortDriver()
 {
     int addr;
 
+    pasynManager->unregisterPort(portName);
     epicsMutexDestroy(this->mutexId);
     for (addr=0; addr<this->maxAddr; addr++) {
         delete this->params[addr];

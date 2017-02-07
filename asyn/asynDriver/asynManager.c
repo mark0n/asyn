@@ -204,6 +204,9 @@ struct port {
     BOOL          queueStateChange;
     epicsEventId  notifyPortThread;
     epicsThreadId threadid;
+    BOOL          threadStopIssued;
+    epicsMutexId  threadStopLock;
+    epicsMutexId  threadRunningLock;
     userPvt       *pblockProcessHolder;
     /* following are for portConnect */
     asynUser      *pconnectUser;
@@ -291,6 +294,7 @@ static asynStatus getPortName(asynUser *pasynUser,const char **pportName);
 static asynStatus registerPort(const char *portName,
     int attributes,int autoConnect,
     unsigned int priority,unsigned int stackSize);
+static void unregisterPort(const char *portName);
 static asynStatus registerInterface(const char *portName,
     asynInterface *pasynInterface);
 static asynStatus exceptionConnect(asynUser *pasynUser);
@@ -349,6 +353,7 @@ static asynManager manager = {
     getAddr,
     getPortName,
     registerPort,
+    unregisterPort,
     registerInterface,
     exceptionConnect,
     exceptionDisconnect,
@@ -750,6 +755,19 @@ disconnect:
     }
 }
 
+static void setThreadStopIssued(port *pport, BOOL val) {
+    epicsMutexMustLock(pport->threadStopLock);
+    pport->threadStopIssued = val;
+    epicsMutexUnlock(pport->threadStopLock);
+}
+
+static BOOL getThreadStopIssued(port *pport) {
+    epicsMutexMustLock(pport->threadStopLock);
+    BOOL val = pport->threadStopIssued;
+    epicsMutexUnlock(pport->threadStopLock);
+    return val;
+}
+
 static void portThread(port *pport)
 {
     userPvt  *puserPvt;
@@ -758,7 +776,7 @@ static void portThread(port *pport)
     BOOL     callTimeoutUser = FALSE;
 
     taskwdInsert(epicsThreadGetIdSelf(),0,0);
-    while(1) {
+    while(!getThreadStopIssued(pport)) {
         epicsEventMustWait(pport->notifyPortThread);
         epicsMutexMustLock(pport->asynManagerLock);
         if(!pport->dpc.enabled) {
@@ -901,6 +919,7 @@ static void portThread(port *pport)
         }
         epicsMutexUnlock(pport->asynManagerLock);
     }
+    epicsMutexUnlock(pport->threadRunningLock);
 }
 static void queueLockPortCallback(asynUser *pasynUser)
 {
@@ -1921,6 +1940,10 @@ static asynStatus registerPort(const char *portName,
     ellInit(&pport->interfaceList);
     if((attributes&ASYN_CANBLOCK)) {
         for(i=0; i<NUMBER_QUEUE_PRIORITIES; i++) ellInit(&pport->queueList[i]);
+        pport->threadRunningLock = epicsMutexMustCreate();
+	epicsMutexMustLock(pport->threadRunningLock);
+        pport->threadStopLock = epicsMutexMustCreate();
+        setThreadStopIssued(pport, FALSE);
         pport->notifyPortThread = epicsEventMustCreate(epicsEventEmpty);
         priority = priority ? priority : epicsThreadPriorityMedium;
         stackSize = stackSize ?
@@ -1944,6 +1967,36 @@ static asynStatus registerPort(const char *portName,
     ellAdd(&pasynBase->asynPortList,&pport->node);
     epicsMutexUnlock(pasynBase->lock);
     return asynSuccess;
+}
+
+static void unregisterPort(const char *portName)
+{
+    port *pport = locatePort(portName);
+    if(!pport) {
+        printf("asynCommon:unregisterPort: Port %s not registered\n", portName);
+    }
+    epicsMutexMustLock(pasynBase->lock);
+    ellDelete(&pasynBase->asynPortList,&pport->node);
+    epicsMutexUnlock(pasynBase->lock);
+
+    if(pport->attributes & ASYN_CANBLOCK) {
+        setThreadStopIssued(pport, TRUE); // request thread to shut down
+        epicsMutexMustLock(pport->threadRunningLock); // wait for thread to shut down
+        epicsEventDestroy(pport->notifyPortThread);
+        epicsMutexDestroy(pport->threadStopLock);
+        epicsMutexDestroy(pport->threadRunningLock);
+        for(int i = 0; i < NUMBER_QUEUE_PRIORITIES; i++) {
+            ellFree(&pport->queueList[i]);
+        }
+    }
+    ellFree(&pport->interfaceList);
+    ellFree(&pport->deviceList);
+    freeAsynUser(pport->pasynUser);
+    dpCommonFree(&pport->dpc);
+    epicsThreadPrivateDelete(pport->queueLockPortId);
+    epicsMutexDestroy(pport->synchronousLock);
+    epicsMutexDestroy(pport->asynManagerLock);
+    free(pport);
 }
 
 static asynStatus registerInterface(const char *portName,
